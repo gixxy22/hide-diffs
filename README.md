@@ -22,6 +22,7 @@ Press **ctrl+q** any time to show the full diffs again.
 - **Never hides what you need.** If Claude asks you to review an edit, you still see the whole diff.
 - **Keeps count.** A small line above the prompt shows what's changed this session:
   `Diffs hidden (ctrl+q to show) · 14 files (+320 −85) this session`
+- **Compact mode.** Turn it on in settings to put the line counts right on the edit's own line, `● Update(src/api/index.ts)  🔶 (+12 −3)`, so each change takes one line.
 - **Remembers your choice.** If you turn diffs back on, they stay on next time.
 
 ## Install
@@ -45,12 +46,14 @@ If the file doesn't exist, create it with this:
 ```json
 {
   "bindings": [
-    { "context": "Global", "bindings": { "ctrl+q": "app:toggleDiffNoiseFilter" } }
+    { "context": "Global", "bindings": { "ctrl+q": "settings:sortByTokens" } }
   ]
 }
 ```
 
-If it already exists, just add the `"ctrl+q": "app:toggleDiffNoiseFilter"` line inside your `Global` bindings.
+If it already exists, just add the `"ctrl+q": "settings:sortByTokens"` line inside your `Global` bindings.
+
+> Why `settings:sortByTokens`? A mod can only borrow a shortcut action that Claude Code isn't using at that moment. That one is only used inside the `/usage` screen, so ctrl+q always reaches hide-diffs.
 
 > Prefer a different key? Use any key you like in place of `ctrl+q`.
 
@@ -64,6 +67,7 @@ Type `/config` and look for **hide-diffs**.
 | --- | --- | --- |
 | Show small diffs | `5` | Diffs with this many changed lines or fewer still show in full. Set it to `0` to hide every diff. |
 | Icon | `🔶` | Shown at the start of each hidden diff. Use any emoji or symbol, or leave it empty for none. |
+| Compact mode | off | Puts the line counts on an edit's own line, like `● Write(src/a.ts)  🔶 (+12 −0)`, and drops the summary line under it. Shell commands and notebooks keep their summary line. |
 
 ## Update
 

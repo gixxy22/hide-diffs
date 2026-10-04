@@ -1,6 +1,6 @@
 {
   "name": "hide-diffs",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Shows a one-line summary instead of the diff under Edit, Write, NotebookEdit and Bash calls; ctrl+q toggles it",
   "author": { "name": "gixxy22" },
   "types": "./types/index.d.ts",
@@ -16,6 +16,12 @@
       "title": "Icon",
       "description": "Shown at the start of each hidden diff, so it is easy to spot. Leave empty for none.",
       "default": "🔶"
+    },
+    "compact": {
+      "type": "boolean",
+      "title": "Compact mode",
+      "description": "Shows the line counts on the tool call's own line and drops the summary line under it.",
+      "default": false
     }
   }
 }

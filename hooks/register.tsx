@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { SessionTally } from '../types'
+import type { CallChanges, SessionTally } from '../types'
 
 type PatchHunk = { newStart?: number; lines: string[] }
 type FileChangeOutput = {
@@ -33,6 +33,8 @@ const isHiding = atom({ plugin: 'hide-diffs', key: 'isHiding' } as const, true)
 const tally = atom({ plugin: 'hide-diffs', key: 'tally' } as const, { files: [], added: 0, removed: 0 } as SessionTally)
 // The project root when the session started; paths stay relative to it after `/cd` or a worktree move.
 const startRoot = atom({ plugin: 'hide-diffs', key: 'startRoot' } as const, null as string | null)
+// Each finished call's counts, for the compact line: a live call row need not carry its result.
+const changes = atom({ plugin: 'hide-diffs', key: 'changes' } as const, {} as CallChanges)
 
 function countChangedLines(hunks: PatchHunk[] = []): Change {
   let added = 0
@@ -112,6 +114,75 @@ function coloredSummary(Text: TextElement, change: Change) {
   )
 }
 
+// What a hidden diff's summary says: the file it changed and the lines it added and removed.
+// Undefined for anything drawn in full: another tool, a missing output, a review, a small diff.
+type HiddenChange = { what: string; change: Change }
+
+function describeChange(tool: string, output: unknown, root: string, isSmall: (change: Change) => boolean): HiddenChange | undefined {
+  if (tool === 'Bash') {
+    const changes = (output as BashOutput | undefined)?.bashEditDiff
+    if (!changes) return undefined
+    const fileCount = changes.files.length + changes.moreFiles
+    const change = countChangedLines(changes.files.flatMap(file => file.hunks))
+    if (fileCount === 0 || isSmall(change)) return undefined
+    return { what: `Changed ${fileCount} file${fileCount === 1 ? '' : 's'}`, change }
+  }
+
+  if (tool === 'NotebookEdit') {
+    const notebook = output as NotebookOutput | undefined
+    if (!notebook?.notebook_path) return undefined
+    const change = countNotebookLines(notebook)
+    if (isSmall(change)) return undefined
+    const cell = notebook.cell_id ? ` cell ${notebook.cell_id}` : ''
+    return { what: `Changed ${relativePath(notebook.notebook_path, root)}${cell}`, change }
+  }
+
+  if (!DIFF_TOOLS.has(tool)) return undefined
+  const file = output as FileChangeOutput | undefined
+  if (!file?.filePath) return undefined
+  const change = fileChange(file)
+  if (!change || isSmall(change)) return undefined
+  const verb = file.type === 'create' ? 'Created' : 'Changed'
+  const line = file.type === 'create' ? undefined : firstChangedLine(file.structuredPatch)
+  return { what: `${verb} ${relativePath(file.filePath, root)}${line ? `:${line}` : ''}`, change }
+}
+
+// How the engine lays out an Edit or Write row, which no API reports (as akilin/claude-plugins'
+// better-tool-rows measures it): a blank line, then `● Update(path)` as wide as the line,
+// up to GROUP_INDENT columns further in inside a group, a result line opening with ROW_GUTTER.
+const GROUP_INDENT = 6
+const ROW_GUTTER = '  ⎿  '
+// Tools whose row label is `● Name(file_path)`, so the counts can be laid just past it.
+const LABELED_TOOLS = new Set(['Edit', 'Write'])
+
+// The name the engine draws an Edit or Write row under.
+function rowName(tool: string, input: { old_string?: unknown }) {
+  return tool === 'Write' ? 'Write' : input.old_string === '' ? 'Create' : 'Update'
+}
+
+// The columns a string takes on a terminal: 2 for wide CJK characters and pictographs.
+function textWidth(text: string) {
+  let width = 0
+  for (const char of text) {
+    const c = char.codePointAt(0) ?? 0
+    if (/^[\p{Mn}\p{Me}​-‍︀-️]$/u.test(char)) continue
+    const isWide =
+      (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff00 && c <= 0xff60) || (c >= 0x1f300 && c <= 0x1faff)
+    width += isWide ? 2 : 1
+  }
+  return width
+}
+
+// Relative to `root` with its own separators, as the engine draws a path it is handed.
+function shortPath(path: string, root: string) {
+  const dir = /[\\/]$/.test(root) ? root : `${root}/`
+  const head = path.slice(0, dir.length)
+  const isWindows = /^([A-Za-z]:[\\/]|\\\\)/.test(root)
+  const fold = (text: string) => text.replace(/\\/g, '/').toLowerCase()
+  return (isWindows ? fold(head) === fold(dir) : head === dir) ? path.slice(dir.length) : path
+}
+
 export const register: Register = (on, options) => {
   // Diffs with this many changed lines or fewer are drawn in full; 0 hides every diff.
   const smallDiffLines = Math.max(0, Number(options.smallDiffLines ?? 5))
@@ -119,6 +190,8 @@ export const register: Register = (on, options) => {
   // Marks where a diff was hidden; empty for none.
   const icon = String(options.icon ?? '🔶').trim()
   const lead = icon ? `${icon} ` : ''
+  // Puts the counts on the call's own line and drops the summary line under it.
+  const compact = options.compact === true
 
   // Restore the last toggle from the store, so it survives restarts, and record the starting root.
   on('session.start', async ($, e, next) => {
@@ -161,6 +234,7 @@ export const register: Register = (on, options) => {
       added: current.added + change.added,
       removed: current.removed + change.removed,
     }))
+    await update($, changes, current => ({ ...current, [e.tool_use_id]: change }))
     return ran
   })
 
@@ -212,68 +286,89 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // Compact: the counts ride on the call's own line (`● Write(src/a.ts)  (+12 −0)`) and
+  // the result line under it is dropped, so each hidden diff takes one line.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (!compact || !LABELED_TOOLS.has(e.props.tool)) return next(e)
+    if (e.props.isRunning || e.props.isErrored || e.props.isInterrupted) return next(e)
+    const input = e.props.input as { file_path?: unknown; old_string?: unknown } | undefined
+    if (typeof input?.file_path !== 'string' || !(await read($, isHiding))) return next(e)
+
+    // The row's own result when it carries one, else what the call recorded.
+    const root = (await read($, startRoot)) ?? (await $.session.root())
+    const recorded = (await read($, changes))[e.props.tool_use_id]
+    const change =
+      describeChange(e.props.tool, e.props.output, root, isSmall)?.change ??
+      (recorded && !isSmall(recorded) ? recorded : undefined)
+    if (!change) return next(e)
+
+    // Hand the engine the path relative to the root, so the label's width is known, and
+    // leave its row whole (status dot and all): the counts are laid over its last line.
+    const path = shortPath(input.file_path, root)
+    const row = await next({ ...e, props: { ...e.props, input: { ...input, file_path: path } } })
+    const { Box, Text } = $.ui.resolve(e)
+    const counts = (
+      <Text dimColor>
+        {lead}
+        {coloredSummary(Text, change)}
+      </Text>
+    )
+    const labelWidth = textWidth(`● ${rowName(e.props.tool, input)}(${path})`)
+    const countsWidth = textWidth(`${lead}${summarize(change)}`)
+    const columns = e.viewport?.columns ?? 80
+
+    // A label too long for the line wraps; the counts go on a line of their own beneath it.
+    if (labelWidth + 2 + countsWidth > columns - GROUP_INDENT) {
+      return (
+        <Box flexDirection="column">
+          {row}
+          <Box>
+            <Text dimColor>{ROW_GUTTER}</Text>
+            {counts}
+          </Box>
+        </Box>
+      )
+    }
+    return (
+      <Box>
+        {row}
+        <Box position="absolute" bottom={0} left={labelWidth + 2}>
+          {counts}
+        </Box>
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (e.props.isErrored || !(await read($, isHiding))) return next(e)
 
+    const root = (await read($, startRoot)) ?? (await $.session.root())
+    const hidden = describeChange(e.props.tool, e.props.output, root, isSmall)
+    if (!hidden) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
     // Bash: draw its own output, minus the per-file diff of what the command changed.
     if (e.props.tool === 'Bash') {
-      const output = e.props.output as BashOutput | undefined
-      const changes = output?.bashEditDiff
-      if (!changes) return next(e)
-
-      const fileCount = changes.files.length + changes.moreFiles
-      const totals = countChangedLines(changes.files.flatMap(file => file.hunks))
-      if (fileCount === 0 || isSmall(totals)) return next(e)
-
-      const { Box, Text } = $.ui.resolve(e)
-      const { bashEditDiff: _hidden, ...outputWithoutDiff } = output
+      const { bashEditDiff: _hidden, ...outputWithoutDiff } = e.props.output as BashOutput
       const drawn = await next({ ...e, props: { ...e.props, output: outputWithoutDiff } })
-
       return (
         <Box flexDirection="column">
           {drawn}
           <Text dimColor>
-            {lead}Changed {fileCount} file{fileCount === 1 ? '' : 's'} {coloredSummary(Text, totals)}
+            {lead}
+            {hidden.what} {coloredSummary(Text, hidden.change)}
           </Text>
         </Box>
       )
     }
 
-    const root = (await read($, startRoot)) ?? (await $.session.root())
-
-    if (e.props.tool === 'NotebookEdit') {
-      const output = e.props.output as NotebookOutput | undefined
-      if (!output?.notebook_path) return next(e)
-
-      const change = countNotebookLines(output)
-      if (isSmall(change)) return next(e)
-
-      const { Text } = $.ui.resolve(e)
-      const cell = output.cell_id ? ` cell ${output.cell_id}` : ''
-      return (
-        <Text dimColor>
-          {lead}Changed {relativePath(output.notebook_path, root)}
-          {cell} {coloredSummary(Text, change)}
-        </Text>
-      )
-    }
-
-    if (!DIFF_TOOLS.has(e.props.tool)) return next(e)
-
-    const output = e.props.output as FileChangeOutput | undefined
-    if (!output?.filePath) return next(e)
-
-    const change = fileChange(output)
-    if (!change || isSmall(change)) return next(e)
-
-    const { Text } = $.ui.resolve(e)
-    const verb = output.type === 'create' ? 'Created' : 'Changed'
-    const line = output.type === 'create' ? undefined : firstChangedLine(output.structuredPatch)
-    const location = relativePath(output.filePath, root) + (line ? `:${line}` : '')
+    // Compact: an Edit or Write row already carries the counts.
+    if (compact && LABELED_TOOLS.has(e.props.tool)) return <Box />
 
     return (
       <Text dimColor>
-        {lead}{verb} {location} {coloredSummary(Text, change)}
+        {lead}
+        {hidden.what} {coloredSummary(Text, hidden.change)}
       </Text>
     )
   })
