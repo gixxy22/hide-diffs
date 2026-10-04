@@ -1,0 +1,21 @@
+{
+  "name": "hide-diffs",
+  "version": "1.0.0",
+  "description": "Shows a one-line summary instead of the diff under Edit, Write, NotebookEdit and Bash calls; ctrl+q toggles it",
+  "author": { "name": "gixxy22" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "smallDiffLines": {
+      "type": "number",
+      "title": "Show small diffs",
+      "description": "Diffs with this many changed lines or fewer are shown in full. 0 hides every diff.",
+      "default": 5
+    },
+    "icon": {
+      "type": "string",
+      "title": "Icon",
+      "description": "Shown at the start of each hidden diff, so it is easy to spot. Leave empty for none.",
+      "default": "🔶"
+    }
+  }
+}

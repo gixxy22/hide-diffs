@@ -1,0 +1,15 @@
+{
+  "name": "gixxy22-plugins",
+  "description": "Claude Code mods by gixxy22",
+  "owner": {
+    "name": "gixxy22",
+    "url": "https://github.com/gixxy22"
+  },
+  "plugins": [
+    {
+      "name": "hide-diffs",
+      "source": "./",
+      "description": "One-line summaries instead of full diffs under Edit, Write, NotebookEdit and Bash calls; ctrl+q toggles them"
+    }
+  ]
+}
