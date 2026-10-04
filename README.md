@@ -14,6 +14,10 @@ Press **ctrl+q** any time to show the full diffs again.
 
 ![The same edit as a one-line summary](docs/with-hide-diffs.svg)
 
+**With compact mode** (turn it on in settings)
+
+![Each edit on one line, with its counts after the file name](docs/with-compact-mode.svg)
+
 ## What it does
 
 - **Hides long diffs** from edits, new files, notebooks and shell commands, and shows the file, line and lines changed instead.
