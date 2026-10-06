@@ -6,6 +6,8 @@ Tired of long diffs filling your Claude Code screen? This mod swaps them for a s
 
 Press **ctrl+q** any time to show the full diffs again.
 
+It also folds each shell command to one line, `● Bash(npm test -- --run src/api)  ⎿  24 lines`. Press **alt+q** to show commands in full.
+
 **Without hide-diffs**
 
 ![An edit showing a 15-line diff](docs/without-hide-diffs.svg)
@@ -18,6 +20,14 @@ Press **ctrl+q** any time to show the full diffs again.
 
 ![Each edit on one line, with its counts after the file name](docs/with-compact-mode.svg)
 
+**Without folded commands**
+
+![Three shell commands, each with its output under it](docs/without-folded-commands.svg)
+
+**With folded commands** (alt+q switches them)
+
+![Each shell command on one line, with how many lines it printed or its error](docs/with-folded-commands.svg)
+
 ## What it does
 
 - **Hides long diffs** from edits, new files, notebooks and shell commands, and shows the file, line and lines changed instead.
@@ -25,7 +35,8 @@ Press **ctrl+q** any time to show the full diffs again.
 - **Keeps short diffs.** Changes of 5 lines or fewer still show in full.
 - **Never hides what you need.** If Claude asks you to review an edit, you still see the whole diff.
 - **Keeps count.** A small line above the prompt shows what's changed this session:
-  `Diffs hidden (ctrl+q to show) · 14 files (+320 −85) this session`
+  `Diffs hidden (ctrl+q to show) · Commands folded (alt+q to show) · 14 files (+320 −85) this session`
+- **Folds shell commands.** A finished Bash or PowerShell call takes one line: the command, cut to fit, then how many lines it printed (or its error in red, or what it changed in files). Press alt+q to show commands in full.
 - **Compact mode.** Turn it on in settings to put the line counts right on the edit's own line, `● Update(src/api/index.ts)  🔶 (+12 −3)`, so each change takes one line.
 - **Remembers your choice.** If you turn diffs back on, they stay on next time.
 
@@ -40,7 +51,7 @@ Works on Windows, macOS and Linux.
 /plugin install hide-diffs@gixxy22-plugins
 ```
 
-**2. Turn on the ctrl+q shortcut.** Open your keybindings file:
+**2. Turn on the ctrl+q and alt+q shortcuts.** Open your keybindings file:
 
 - Windows: `C:\Users\<you>\.claude\keybindings.json`
 - macOS / Linux: `~/.claude/keybindings.json`
@@ -50,14 +61,14 @@ If the file doesn't exist, create it with this:
 ```json
 {
   "bindings": [
-    { "context": "Global", "bindings": { "ctrl+q": "settings:sortByTokens" } }
+    { "context": "Global", "bindings": { "ctrl+q": "settings:sortByTokens", "alt+q": "settings:periodWeek" } }
   ]
 }
 ```
 
-If it already exists, just add the `"ctrl+q": "settings:sortByTokens"` line inside your `Global` bindings.
+If it already exists, just add the `"ctrl+q": "settings:sortByTokens"` and `"alt+q": "settings:periodWeek"` lines inside your `Global` bindings.
 
-> Why `settings:sortByTokens`? A mod can only borrow a shortcut action that Claude Code isn't using at that moment. That one is only used inside the `/usage` screen, so ctrl+q always reaches hide-diffs.
+> Why `settings:sortByTokens` and `settings:periodWeek`? A mod can only borrow a shortcut action that Claude Code isn't using at that moment. Those two are only used inside the `/usage` screen, so ctrl+q and alt+q always reach hide-diffs.
 
 > Prefer a different key? Use any key you like in place of `ctrl+q`.
 

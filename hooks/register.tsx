@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { CallChanges, SessionTally } from '../types'
+import type { CallChanges, CommandOutcome, CommandOutcomes, SessionTally } from '../types'
 
 type PatchHunk = { newStart?: number; lines: string[] }
 type FileChangeOutput = {
@@ -15,6 +15,13 @@ type FileChangeOutput = {
 type NotebookOutput = { notebook_path: string; cell_id?: string; old_source?: string; new_source: string }
 type BashEditDiff = { files: { filePath: string; hunks: PatchHunk[] }[]; moreFiles: number }
 type BashOutput = { bashEditDiff?: BashEditDiff }
+type ShellOutput = BashOutput & {
+  stdout?: string
+  stderr?: string
+  interrupted?: boolean
+  backgroundTaskId?: string
+  returnCodeInterpretation?: string
+}
 type Change = { added: number; removed: number }
 type TextElement = ReturnType<EngineInterface['ui']['resolve']>['Text']
 
@@ -30,6 +37,13 @@ const FILE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 const TOGGLE_ACTION = 'settings:sortByTokens'
 const STORE_KEY = 'isHiding'
 const isHiding = atom({ plugin: 'hide-diffs', key: 'isHiding' } as const, true)
+// The second chord (alt+q) folds shell commands; settings:periodWeek is another /usage-only action.
+const COMMANDS_ACTION = 'settings:periodWeek'
+const COMMANDS_STORE_KEY = 'isFoldingCommands'
+const isFoldingCommands = atom({ plugin: 'hide-diffs', key: 'isFoldingCommands' } as const, true)
+// Each finished shell call's one-line outcome: a finished row need not carry its result.
+const outcomes = atom({ plugin: 'hide-diffs', key: 'outcomes' } as const, {} as CommandOutcomes)
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 const tally = atom({ plugin: 'hide-diffs', key: 'tally' } as const, { files: [], added: 0, removed: 0 } as SessionTally)
 // The project root when the session started; paths stay relative to it after `/cd` or a worktree move.
 const startRoot = atom({ plugin: 'hide-diffs', key: 'startRoot' } as const, null as string | null)
@@ -183,6 +197,41 @@ function shortPath(path: string, root: string) {
   return (isWindows ? fold(head) === fold(dir) : head === dir) ? path.slice(dir.length) : path
 }
 
+// `text` cut to `width` columns, ending in `…` where it was cut.
+function fitWidth(text: string, width: number) {
+  if (textWidth(text) <= width) return text
+  let fitted = ''
+  for (const char of text) {
+    if (textWidth(fitted + char) > width - 1) break
+    fitted += char
+  }
+  return `${fitted}…`
+}
+
+function lineCount(text = '') {
+  const trimmed = text.replace(/\s+$/, '')
+  return trimmed ? trimmed.split('\n').length : 0
+}
+
+function plural(count: number, word: string) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`
+}
+
+// What a folded command's line says of its result: `16 lines`, `no output`, or an
+// error's first line (`Exit code 1 (+3 lines)`).
+function commandOutcome(isErrored: boolean, output: unknown): CommandOutcome {
+  if (isErrored) {
+    const lines = (typeof output === 'string' ? output : '').split('\n').map(line => line.trim()).filter(Boolean)
+    const first = fitWidth((lines[0] ?? 'Failed').replace(/^Error:\s*/, ''), 40)
+    return { text: lines.length > 1 ? `${first} (+${plural(lines.length - 1, 'line')})` : first, isError: true }
+  }
+  const result = output as ShellOutput | undefined
+  if (result?.backgroundTaskId) return { text: 'running in background', isError: false }
+  const lines = lineCount(result?.stdout) + lineCount(result?.stderr)
+  if (lines > 0) return { text: plural(lines, 'line'), isError: false }
+  return { text: result?.returnCodeInterpretation || 'no output', isError: false }
+}
+
 export const register: Register = (on, options) => {
   // Diffs with this many changed lines or fewer are drawn in full; 0 hides every diff.
   const smallDiffLines = Math.max(0, Number(options.smallDiffLines ?? 5))
@@ -201,7 +250,18 @@ export const register: Register = (on, options) => {
     }
     const saved = await $.store.get(STORE_KEY)
     if (typeof saved === 'boolean') await update($, isHiding, () => saved)
+    const savedFolding = await $.store.get(COMMANDS_STORE_KEY)
+    if (typeof savedFolding === 'boolean') await update($, isFoldingCommands, () => savedFolding)
     return next(e)
+  })
+
+  // Record each finished shell command's outcome for its folded line.
+  on('tool.call', { tool: ['Bash', 'PowerShell'] }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny !== undefined) return ran
+    const outcome = commandOutcome(ran.isError === true, ran.isError ? ran.text : ran.result)
+    await update($, outcomes, current => ({ ...current, [e.tool_use_id]: outcome }))
+    return ran
   })
 
   // Add each finished change to the session tally shown on the switch.
@@ -243,26 +303,43 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
 
     const hiding = await read($, isHiding)
+    const folding = await read($, isFoldingCommands)
     const totals = await read($, tally)
-    const { Button } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const fileCount = totals.files.length
     const tallyText = fileCount
       ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'} ${summarize(totals)} this session`
       : ''
 
     return (
-      <Button
-        action={TOGGLE_ACTION}
-        dimColor
-        key="toggle-diffs"
-        label={`${hiding ? 'Diffs hidden (ctrl+q to show)' : 'Diffs shown (ctrl+q to hide)'}${tallyText}`}
-        onPress={async () => {
-          const nowHiding = await update($, isHiding, value => !value)
-          await $.store.set(STORE_KEY, nowHiding)
-          $.ui.toast(nowHiding ? 'Diffs hidden' : 'Diffs shown')
-        }}
-        plain
-      />
+      <Box>
+        <Button
+          action={TOGGLE_ACTION}
+          dimColor
+          key="toggle-diffs"
+          label={hiding ? 'Diffs hidden (ctrl+q to show)' : 'Diffs shown (ctrl+q to hide)'}
+          onPress={async () => {
+            const nowHiding = await update($, isHiding, value => !value)
+            await $.store.set(STORE_KEY, nowHiding)
+            $.ui.toast(nowHiding ? 'Diffs hidden' : 'Diffs shown')
+          }}
+          plain
+        />
+        <Text dimColor> · </Text>
+        <Button
+          action={COMMANDS_ACTION}
+          dimColor
+          key="toggle-commands"
+          label={folding ? 'Commands folded (alt+q to show)' : 'Commands shown (alt+q to fold)'}
+          onPress={async () => {
+            const nowFolding = await update($, isFoldingCommands, value => !value)
+            await $.store.set(COMMANDS_STORE_KEY, nowFolding)
+            $.ui.toast(nowFolding ? 'Commands folded to one line' : 'Commands shown in full')
+          }}
+          plain
+        />
+        {tallyText ? <Text dimColor>{tallyText}</Text> : null}
+      </Box>
     )
   })
 
@@ -339,7 +416,61 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // Folded commands: a finished shell call draws one line of its own, `● Bash(cmd…)  ⎿  16 lines`,
+  // and its output is dropped; a running one keeps the engine's row, its command cut to one line.
+  // A command whose file changes are on show (ctrl+q) stays whole.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || !SHELL_TOOLS.has(e.props.tool) || e.props.isInterrupted) return next(e)
+    const input = e.props.input as { command?: unknown } | undefined
+    if (typeof input?.command !== 'string' || !(await read($, isFoldingCommands))) return next(e)
+    const output = e.props.isErrored ? undefined : (e.props.output as ShellOutput | undefined)
+    if (!(await read($, isHiding)) && output?.bashEditDiff?.files.length) return next(e)
+
+    const width = (e.viewport?.columns ?? 80) - GROUP_INDENT
+    const command = input.command.replace(/\s+/g, ' ').trim()
+    const head = `● ${e.props.tool}()`
+    const outcome =
+      e.props.output !== undefined ? commandOutcome(e.props.isErrored, e.props.output) : (await read($, outcomes))[e.props.tool_use_id]
+    if (e.props.isRunning || !outcome) {
+      const fitted = fitWidth(command, Math.max(12, width - textWidth(head)))
+      return next({ ...e, props: { ...e.props, input: { ...input, command: fitted } } })
+    }
+
+    // What the command changed in files rides on the line too; its diff is never drawn.
+    const edits = output?.bashEditDiff
+    const change = edits?.files.length ? countChangedLines(edits.files.flatMap(file => file.hunks)) : undefined
+    const files = edits ? plural(edits.files.length + edits.moreFiles, 'file') : ''
+    const tail = `  ⎿  ${outcome.text}${change ? ` · ${lead}${files} ${summarize(change)}` : ''}`
+    const fitted = fitWidth(command, Math.max(12, width - textWidth(head) - textWidth(tail)))
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box>
+        <Text color={outcome.isError ? 'error' : 'success'}>● </Text>
+        <Text bold>{e.props.tool}</Text>
+        <Text>({fitted})</Text>
+        <Text dimColor>  ⎿  </Text>
+        {outcome.isError ? <Text color="error">{outcome.text}</Text> : <Text dimColor>{outcome.text}</Text>}
+        {change ? (
+          <Text dimColor>
+            {' · '}
+            {lead}
+            {files} {coloredSummary(Text, change)}
+          </Text>
+        ) : null}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    // A folded command's row carries its outcome, so its result block is dropped.
+    if (e.surface === 'terminal' && SHELL_TOOLS.has(e.props.tool) && (await read($, isFoldingCommands))) {
+      const output = e.props.isErrored ? undefined : (e.props.output as ShellOutput | undefined)
+      const showsEdits = !(await read($, isHiding)) && output?.bashEditDiff?.files.length
+      if (!output?.interrupted && !showsEdits) {
+        const { Box } = $.ui.resolve(e)
+        return <Box />
+      }
+    }
     if (e.props.isErrored || !(await read($, isHiding))) return next(e)
 
     const root = (await read($, startRoot)) ?? (await $.session.root())

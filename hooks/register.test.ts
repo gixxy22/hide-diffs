@@ -1,6 +1,6 @@
 import type { RenderElement } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, TestBody } from 'claude-code/testing'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const ABOVE_PROMPT = {
@@ -94,7 +94,7 @@ for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'hide-diffs', surface, component: 'AbovePrompt', props: ABOVE_PROMPT })
     const label = String((await ui.find({ key: 'toggle-diffs' }))?.props.label)
     expect(label).toContain('Diffs hidden')
-    expect(label).toContain('1 file (+12 −2) this session')
+    expect((await ui.findAll({ type: 'Text' })).some(t => t.text.includes('1 file (+12 −2) this session'))).toBe(true)
 
     await ui.press({ key: 'toggle-diffs' })
     expect(String((await ui.find({ key: 'toggle-diffs' }))?.props.label)).toContain('Diffs shown')
@@ -305,8 +305,124 @@ for (const surface of SURFACES) {
     on('session.root', () => ({ value: 'C:/repo' }))
     on('ui.render', { component: 'ToolResult' }, ($, e) => h($.ui.resolve(e).Text, {}, 'output') as RenderElement)
 
+    on('store.set', () => ({ value: undefined }))
+    const band = await $.ui.mount({ plugin: 'hide-diffs', surface, component: 'AbovePrompt', props: ABOVE_PROMPT })
+    await band.press({ key: 'toggle-commands' })
+
     const output = { stdout: '', stderr: '', bashEditDiff: { files: [{ filePath: 'C:/repo/a.ts', hunks: [{ lines: ['+x', '-y'] }] }], moreFiles: 0 } }
     const ui = await $.ui.mount({ plugin: 'hide-diffs', surface, component: 'ToolResult', props: { tool_use_id: 'b', tool: 'Bash', isErrored: false, output } })
     expect((await ui.findAll({ type: 'Text' })).some(t => t.text.includes('Changed 1 file'))).toBe(true)
   })
 }
+
+const bashUse = (input: Record<string, unknown>, rest: Record<string, unknown> = {}) => ({
+  tool_use_id: 'sh',
+  tool: 'Bash',
+  input: { command: 'ls', ...input },
+  isRunning: false,
+  isErrored: false,
+  isInterrupted: false,
+  ...rest,
+})
+const shellOutput = (stdout: string) => ({ stdout, stderr: '', interrupted: false })
+// Stands for the engine: its row as `● Bash(<command it was handed>)`, its result block.
+const drawCommand = (on: Parameters<TestBody>[1]) => {
+  on('ui.render', { component: 'ToolUse' }, ($, e) =>
+    h($.ui.resolve(e).Text, {}, `● Bash(${(e.props.input as { command: string }).command})`) as RenderElement,
+  )
+  on('ui.render', { component: 'ToolResult' }, ($, e) => h($.ui.resolve(e).Text, {}, 'full output') as RenderElement)
+}
+const texts = async (ui: { findAll: (query: { type: 'Text' }) => Promise<{ text: string; props: Record<string, unknown> }[]> }) =>
+  (await ui.findAll({ type: 'Text' })).map(t => t.text)
+
+test('terminal: a finished command folds to one line and drops its output', async ($, on) => {
+  drawCommand(on)
+  const props = bashUse({ command: 'cd C:/x &&\n  grep -rn "a" src' }, { output: shellOutput('a\nb\nc\n') })
+
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props })
+  const drawn = await texts(row)
+  expect(drawn).toContain('Bash')
+  expect(drawn).toContain('(cd C:/x && grep -rn "a" src)')
+  expect(drawn).toContain('3 lines')
+  expect(drawn.some(t => t.startsWith('● Bash('))).toBe(false)
+
+  const result = await $.ui.mount({
+    plugin: 'hide-diffs',
+    surface: 'terminal',
+    component: 'ToolResult',
+    props: { tool_use_id: 'sh', tool: 'Bash', isErrored: false, output: shellOutput('a\nb\nc\n') },
+  })
+  expect((await result.findAll({ type: 'Text' })).length).toBe(0)
+})
+
+test('terminal: a long command is cut to fit the line', async ($, on) => {
+  drawCommand(on)
+  const long = `grep -rn ${'x'.repeat(300)}`
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props: bashUse({ command: long }, { output: shellOutput('') }) })
+  const drawn = await texts(row)
+  const label = drawn.find(t => t.startsWith('(grep'))
+  expect(label?.endsWith('…)')).toBe(true)
+  // The dot, name, command and outcome fit in 80 columns, less the indent a group adds.
+  expect(`● Bash${label}  ⎿  no output`.length).toBeLessThanOrEqual(74)
+})
+
+test('terminal: a failed command shows its first error line in red', async ($, on) => {
+  drawCommand(on)
+  const props = bashUse({}, { isErrored: true, output: 'Error: Exit code 1\nnot found\nstill not found' })
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props })
+  const error = (await row.findAll({ type: 'Text' })).find(t => t.text === 'Exit code 1 (+2 lines)')
+  expect(error?.props.color).toBe('error')
+})
+
+test('terminal: a running command keeps the engine row, cut to one line', async ($, on) => {
+  drawCommand(on)
+  const props = bashUse({ command: `cat <<'EOF'\n${'line\n'.repeat(40)}EOF` }, { isRunning: true })
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props })
+  const drawn = (await texts(row))[0] ?? ''
+  expect(drawn.startsWith("● Bash(cat <<'EOF' line line")).toBe(true)
+  expect(drawn.includes('\n')).toBe(false)
+  expect(drawn.length).toBeLessThanOrEqual(74)
+})
+
+test('terminal: a finished row with no result uses what the call recorded', async ($, on) => {
+  drawCommand(on)
+  on('tool.call', { tool: 'Bash' }, () => ({ result: shellOutput('one\ntwo\n') }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'live', command: 'ls' })
+
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props: bashUse({}, { tool_use_id: 'live' }) })
+  expect(await texts(row)).toContain('2 lines')
+})
+
+test('terminal: the files a command changed ride on its folded line', async ($, on) => {
+  drawCommand(on)
+  const output = { ...shellOutput(''), bashEditDiff: { files: [{ filePath: 'C:/repo/a.ts', hunks: [{ lines: ['+x', '+y', '-z'] }] }], moreFiles: 0 } }
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props: bashUse({ command: "sed -i 's/z/x/' a.ts" }, { output }) })
+  expect((await texts(row)).some(t => t.includes('🔶 1 file (+2 −1)'))).toBe(true)
+})
+
+test('terminal: alt+q shows commands in full and the choice is saved', async ($, on) => {
+  drawCommand(on)
+  const store = new Map<string, unknown>()
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  const props = bashUse({ command: 'ls' }, { output: shellOutput('a\n') })
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'ToolUse', props })
+  expect(await texts(row)).toContain('1 line')
+
+  const band = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'AbovePrompt', props: ABOVE_PROMPT })
+  expect((await band.find({ key: 'toggle-commands' }))?.props.action).toBe('settings:periodWeek')
+  await band.press({ key: 'toggle-commands' })
+
+  expect(await texts(row)).toContain('● Bash(ls)')
+  expect(store.get('isFoldingCommands')).toBe(false)
+  expect(String((await band.find({ key: 'toggle-commands' }))?.props.label)).toContain('Commands shown')
+})
+
+test('desktop: commands are drawn as the engine draws them', async ($, on) => {
+  drawCommand(on)
+  const props = bashUse({ command: 'ls' }, { output: shellOutput('a\n') })
+  const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'desktop', component: 'ToolUse', props })
+  expect(await texts(row)).toContain('● Bash(ls)')
+})

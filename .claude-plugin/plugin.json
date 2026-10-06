@@ -1,7 +1,7 @@
 {
   "name": "hide-diffs",
-  "version": "1.1.1",
-  "description": "Shows a one-line summary instead of the diff under Edit, Write, NotebookEdit and Bash calls; ctrl+q toggles it",
+  "version": "1.2.0",
+  "description": "Shows a one-line summary instead of the diff under Edit, Write, NotebookEdit and Bash calls (ctrl+q), and folds each shell command to one line (alt+q)",
   "author": { "name": "gixxy22" },
   "types": "./types/index.d.ts",
   "userConfig": {

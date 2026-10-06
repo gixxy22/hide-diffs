@@ -9,7 +9,7 @@
     {
       "name": "hide-diffs",
       "source": "./",
-      "description": "One-line summaries instead of full diffs under Edit, Write, NotebookEdit and Bash calls; ctrl+q toggles them"
+      "description": "One-line summaries instead of full diffs (ctrl+q), and shell commands folded to one line (alt+q)"
     }
   ]
 }
