@@ -107,12 +107,15 @@ function countNotebookLines(output: NotebookOutput): Change {
 }
 
 function relativePath(filePath: string, projectRoot: string) {
-  const path = filePath.replace(/\\/g, '/')
-  const root = projectRoot.replace(/\\/g, '/').replace(/\/$/, '') + '/'
+  // Separators are folded only to find the root; the path keeps its own, as the row above shows
+  // it. Folding changes no length, so the root's length cuts the original path.
+  const fold = (text: string) => text.replace(/\\/g, '/')
+  const path = fold(filePath)
+  const root = fold(projectRoot).replace(/\/$/, '') + '/'
   // Windows paths ignore case; elsewhere a folder differing only in case is another folder.
   const isWindows = /^[a-z]:\//i.test(root)
   const isInside = isWindows ? path.toLowerCase().startsWith(root.toLowerCase()) : path.startsWith(root)
-  return isInside ? path.slice(root.length) : path
+  return isInside ? filePath.slice(root.length) : filePath
 }
 
 function summarize(change: Change) {

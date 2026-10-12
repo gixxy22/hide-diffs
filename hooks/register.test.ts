@@ -44,7 +44,7 @@ for (const surface of SURFACES) {
       props: { tool_use_id: 't1', tool: 'Edit', isErrored: false, output: editOutput('C:\\repo\\src\\a.ts', 6) },
     })
 
-    expect(await ui.find({ text: '🔶 Changed src/a.ts:12 (+6 −1)' })).toBeDefined()
+    expect(await ui.find({ text: '🔶 Changed src\\a.ts:12 (+6 −1)' })).toBeDefined()
 
     const texts = await ui.findAll({ type: 'Text' })
     expect(texts.find(t => t.text === '+6')?.props.color).toBe('success')
