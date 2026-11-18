@@ -40,6 +40,8 @@ const isHiding = atom({ plugin: 'hide-diffs', key: 'isHiding' } as const, true)
 // The second chord (alt+q) folds shell commands; settings:periodWeek is another /usage-only action.
 const COMMANDS_ACTION = 'settings:periodWeek'
 const COMMANDS_STORE_KEY = 'isFoldingCommands'
+// The slash command that sets the diff switch, for when the band (and so the chords) is collapsed.
+const COMMAND = 'diffs'
 const isFoldingCommands = atom({ plugin: 'hide-diffs', key: 'isFoldingCommands' } as const, true)
 // Each finished shell call's one-line outcome: a finished row need not carry its result.
 const outcomes = atom({ plugin: 'hide-diffs', key: 'outcomes' } as const, {} as CommandOutcomes)
@@ -49,6 +51,25 @@ const tally = atom({ plugin: 'hide-diffs', key: 'tally' } as const, { files: [],
 const startRoot = atom({ plugin: 'hide-diffs', key: 'startRoot' } as const, null as string | null)
 // Each finished call's counts, for the compact line: a live call row need not carry its result.
 const changes = atom({ plugin: 'hide-diffs', key: 'changes' } as const, {} as CallChanges)
+
+// Each switch sets or flips its atom, saves the choice, and returns the words that say what it is now.
+const diffsText = (hiding: boolean) => (hiding ? 'Diffs hidden' : 'Diffs shown')
+
+async function setDiffs($: EngineInterface, hiding: boolean) {
+  await update($, isHiding, () => hiding)
+  await $.store.set(STORE_KEY, hiding)
+  return diffsText(hiding)
+}
+
+async function toggleDiffs($: EngineInterface) {
+  return setDiffs($, !(await read($, isHiding)))
+}
+
+async function toggleCommands($: EngineInterface) {
+  const nowFolding = await update($, isFoldingCommands, value => !value)
+  await $.store.set(COMMANDS_STORE_KEY, nowFolding)
+  return nowFolding ? 'Commands folded to one line' : 'Commands shown in full'
+}
 
 function countChangedLines(hunks: PatchHunk[] = []): Change {
   let added = 0
@@ -247,6 +268,13 @@ export const register: Register = (on, options) => {
 
   // Restore the last toggle from the store, so it survives restarts, and record the starting root.
   on('session.start', async ($, e, next) => {
+    // The chords only reach the switch while the band above the prompt is open; the command always works.
+    await $.command.register({
+      name: COMMAND,
+      description: 'Hide or show diffs',
+      argumentHint: '<hide|show>',
+      immediate: true,
+    })
     if ((await read($, startRoot)) === null) {
       const root = await $.session.root()
       await update($, startRoot, () => root)
@@ -256,6 +284,16 @@ export const register: Register = (on, options) => {
     const savedFolding = await $.store.get(COMMANDS_STORE_KEY)
     if (typeof savedFolding === 'boolean') await update($, isFoldingCommands, () => savedFolding)
     return next(e)
+  })
+
+  // `/diffs hide` and `/diffs show` set the switch; bare `/diffs` says where it is.
+  on('command.run', { command: COMMAND }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    const text =
+      arg === 'hide' || arg === 'show'
+        ? await setDiffs($, arg === 'hide')
+        : `${diffsText(await read($, isHiding))}. Usage: /${COMMAND} hide or /${COMMAND} show`
+    return { text, isTextDisplayOnly: true as const }
   })
 
   // Record each finished shell command's outcome for its folded line.
@@ -321,11 +359,7 @@ export const register: Register = (on, options) => {
           dimColor
           key="toggle-diffs"
           label={hiding ? 'Diffs hidden (ctrl+q to show)' : 'Diffs shown (ctrl+q to hide)'}
-          onPress={async () => {
-            const nowHiding = await update($, isHiding, value => !value)
-            await $.store.set(STORE_KEY, nowHiding)
-            $.ui.toast(nowHiding ? 'Diffs hidden' : 'Diffs shown')
-          }}
+          onPress={async () => $.ui.toast(await toggleDiffs($))}
           plain
         />
         <Text dimColor> · </Text>
@@ -334,11 +368,7 @@ export const register: Register = (on, options) => {
           dimColor
           key="toggle-commands"
           label={folding ? 'Commands folded (alt+q to show)' : 'Commands shown (alt+q to fold)'}
-          onPress={async () => {
-            const nowFolding = await update($, isFoldingCommands, value => !value)
-            await $.store.set(COMMANDS_STORE_KEY, nowFolding)
-            $.ui.toast(nowFolding ? 'Commands folded to one line' : 'Commands shown in full')
-          }}
+          onPress={async () => $.ui.toast(await toggleCommands($))}
           plain
         />
         {tallyText ? <Text dimColor>{tallyText}</Text> : null}

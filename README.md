@@ -38,6 +38,7 @@ It also folds each shell command to one line, `● Bash(npm test -- --run src/ap
   `Diffs hidden (ctrl+q to show) · Commands folded (alt+q to show) · 14 files (+320 −85) this session`
 - **Folds shell commands.** A finished Bash or PowerShell call takes one line: the command, cut to fit, then how many lines it printed (or its error in red, or what it changed in files). Press alt+q to show commands in full.
 - **Compact mode.** Turn it on in settings to put the line counts right on the edit's own line, `● Update(src/api/index.ts)  🔶 (+12 −3)`, so each change takes one line.
+- **Slash command too.** `/diffs hide` and `/diffs show` set what ctrl+q switches. Use them when the band above the prompt is collapsed (ctrl+x ctrl+a), since the shortcuts only work while it is open.
 - **Remembers your choice.** If you turn diffs back on, they stay on next time.
 
 ## Install
@@ -71,6 +72,8 @@ If it already exists, just add the `"ctrl+q": "settings:sortByTokens"` and `"alt
 > Why `settings:sortByTokens` and `settings:periodWeek`? A mod can only borrow a shortcut action that Claude Code isn't using at that moment. Those two are only used inside the `/usage` screen, so ctrl+q and alt+q always reach hide-diffs.
 
 > Prefer a different key? Use any key you like in place of `ctrl+q`.
+
+> The shortcuts only work while the band above the prompt is open. If you collapse it (ctrl+x ctrl+a), use `/diffs hide` and `/diffs show` instead.
 
 **3. Restart Claude Code.** That's it.
 
