@@ -5,6 +5,7 @@ import type { Engine, TestBody } from 'claude-code/testing'
 const SURFACES = ['terminal', 'desktop'] as const
 const ABOVE_PROMPT = {
   hasSurvey: false,
+  isCollapsed: false,
   isWorking: false,
   maxRows: 10,
   bodyColumns: 80,
@@ -425,4 +426,46 @@ test('desktop: commands are drawn as the engine draws them', async ($, on) => {
   const props = bashUse({ command: 'ls' }, { output: shellOutput('a\n') })
   const row = await $.ui.mount({ plugin: 'hide-diffs', surface: 'desktop', component: 'ToolUse', props })
   expect(await texts(row)).toContain('● Bash(ls)')
+})
+
+test('/diffs hide and /diffs show set the switch and save it; bare /diffs reports it', async ($, on) => {
+  const registered: string[] = []
+  on('command.register', ($, e) => {
+    registered.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('session.root', () => ({ value: 'C:/repo' }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  const store = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: 'C:/repo', surface: 'terminal', isInteractive: true })
+  expect(registered).toEqual(['diffs'])
+
+  const band = await $.ui.mount({ plugin: 'hide-diffs', surface: 'terminal', component: 'AbovePrompt', props: ABOVE_PROMPT })
+  const label = async () => String((await band.find({ key: 'toggle-diffs' }))?.props.label)
+  const run = (args: string) =>
+    $.command.run({
+      command: 'diffs',
+      args,
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 80 },
+    })
+
+  // [args, reply, saved, band label]: setting the state it already has just confirms it.
+  const cases: [string, string, unknown, string][] = [
+    ['show', 'Diffs shown', false, 'Diffs shown'],
+    ['show', 'Diffs shown', false, 'Diffs shown'],
+    [' Hide ', 'Diffs hidden', true, 'Diffs hidden'],
+    ['', 'Diffs hidden. Usage: /diffs hide or /diffs show', true, 'Diffs hidden'],
+    ['nope', 'Diffs hidden. Usage: /diffs hide or /diffs show', true, 'Diffs hidden'],
+  ]
+  for (const [args, text, saved, shown] of cases) {
+    expect((await run(args)).text).toBe(text)
+    expect(store.get('isHiding')).toBe(saved)
+    expect(await label()).toContain(shown)
+  }
 })
